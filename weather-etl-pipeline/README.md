@@ -46,6 +46,8 @@ weather-etl-pipeline/
 
 ## Build it phase by phase
 
+**Want to type or paste the code yourself in VS Code?** [docs/BUILD_GUIDE.md](docs/BUILD_GUIDE.md) has every file's full code, grouped by the phase where you create it.
+
 | # | Phase | Guide |
 |---|---|---|
 | – | Architecture and design decisions | [docs/00-architecture.md](docs/00-architecture.md) |

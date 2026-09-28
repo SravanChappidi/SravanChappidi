@@ -1,0 +1,4 @@
+# OPTIONAL: only needed to run the Spark unit tests (tests/test_transformations.py)
+# on your laptop. Needs Java 17 installed. Spark itself runs in Docker.
+-r requirements.txt
+pyspark==3.5.7

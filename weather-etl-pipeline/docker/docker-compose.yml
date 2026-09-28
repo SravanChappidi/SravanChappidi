@@ -1,0 +1,90 @@
+# Local infrastructure for the Weather ETL POC.
+#
+#   docker compose up -d                    -> Kafka + Kafka UI   (Phases 1-4)
+#   docker compose --profile spark up spark -> + Spark streaming job (Phase 5+)
+#
+# Run these commands from the docker/ folder.
+
+services:
+  kafka:
+    # Single Kafka broker in KRaft mode (no ZooKeeper needed).
+    image: apache/kafka:3.9.1
+    container_name: weather-kafka
+    ports:
+      - "9092:9092"            # for apps on your laptop (Python producer)
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      # Three listeners:
+      #   HOST       -> localhost:9092 (Python on Windows)
+      #   DOCKER     -> kafka:29092    (Kafka UI + Spark containers)
+      #   CONTROLLER -> internal KRaft traffic
+      KAFKA_LISTENERS: HOST://0.0.0.0:9092,DOCKER://0.0.0.0:29092,CONTROLLER://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: HOST://localhost:9092,DOCKER://kafka:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: HOST:PLAINTEXT,DOCKER:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: DOCKER
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      # Single broker -> every replication factor must be 1.
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      # We create topics explicitly, so typos don't silently create new topics.
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      # Keep 7 days of weather events (enough to replay into Spark if needed).
+      KAFKA_LOG_RETENTION_HOURS: 168
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 > /dev/null 2>&1"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+
+  kafka-ui:
+    image: kafbat/kafka-ui:v1.3.0
+    container_name: weather-kafka-ui
+    ports:
+      - "8080:8080"            # open http://localhost:8080
+    environment:
+      KAFKA_CLUSTERS_0_NAME: weather-local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
+    depends_on:
+      kafka:
+        condition: service_healthy
+
+  spark:
+    # Spark runs in a Linux container so you avoid winutils.exe / HADOOP_HOME
+    # problems that PySpark streaming has on native Windows.
+    image: apache/spark:3.5.7-java17-python3
+    container_name: weather-spark
+    profiles: ["spark"]        # only starts when you ask for it
+    user: root                 # avoids file-permission issues on mounted folders
+    depends_on:
+      kafka:
+        condition: service_healthy
+    env_file:
+      - ../.env                # same .env the Python producer uses
+    environment:
+      # Inside Docker, Kafka is reached by its container name, not localhost.
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      CHECKPOINT_ROOT: /app/checkpoints
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - ../spark:/app/spark:ro
+      - ../checkpoints:/app/checkpoints
+      - spark-ivy:/root/.ivy2  # caches downloaded connector jars between runs
+    ports:
+      - "4040:4040"            # Spark UI while the job is running
+    command: >
+      /opt/spark/bin/spark-submit
+      --master local[2]
+      --conf spark.jars.ivy=/root/.ivy2
+      --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.7,net.snowflake:spark-snowflake_2.12:3.1.9
+      /app/spark/weather_stream.py
+
+volumes:
+  kafka-data:
+  spark-ivy:

@@ -1,0 +1,11 @@
+{
+  "cities": [
+    {"name": "Delhi",     "country": "IN"},
+    {"name": "Mumbai",    "country": "IN"},
+    {"name": "Hyderabad", "country": "IN"},
+    {"name": "Bengaluru", "country": "IN"},
+    {"name": "Chennai",   "country": "IN"},
+    {"name": "Kolkata",   "country": "IN"},
+    {"name": "Pune",      "country": "IN"}
+  ]
+}

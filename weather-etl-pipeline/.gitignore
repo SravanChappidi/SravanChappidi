@@ -1,0 +1,25 @@
+# Secrets - never commit real credentials
+.env
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Spark runtime state
+checkpoints/
+spark-warehouse/
+metastore_db/
+derby.log
+logs/
+
+# Power BI local files (commit screenshots, not large .pbix, unless you want to)
+*.pbix.bak
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

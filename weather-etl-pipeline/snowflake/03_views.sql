@@ -1,0 +1,126 @@
+-- =====================================================================
+-- 03_views.sql  -  Reporting views. Power BI reads ONLY views, never tables:
+-- the table can change (new column, rename) without breaking the report.
+-- =====================================================================
+USE ROLE WEATHER_ETL_ROLE;
+USE WAREHOUSE WEATHER_WH;
+USE SCHEMA WEATHER_DB.WEATHER;
+
+-- Main fact for Power BI (one row per city per observation).
+CREATE OR REPLACE VIEW VW_WEATHER_OBSERVATIONS AS
+SELECT
+    EVENT_ID,
+    CITY,
+    OBSERVATION_TS_LOCAL,
+    OBSERVATION_DATE,
+    OBSERVATION_HOUR,
+    TEMPERATURE,
+    FEELS_LIKE,
+    TEMP_MIN,
+    TEMP_MAX,
+    HUMIDITY,
+    PRESSURE,
+    WIND_SPEED,
+    WIND_DIRECTION,
+    CLOUDINESS,
+    VISIBILITY,
+    RAIN_1H,
+    WEATHER_CONDITION,
+    WEATHER_DESCRIPTION,
+    TEMPERATURE_CATEGORY,
+    WIND_CATEGORY,
+    IS_RAINY,
+    HEAT_INDEX,
+    HEAT_INDEX_CATEGORY,
+    OBSERVATION_TS_UTC,
+    LOADED_AT
+FROM WEATHER_FACT;
+
+-- City dimension for Power BI slicers / map.
+CREATE OR REPLACE VIEW VW_CITY AS
+SELECT CITY, STATE, REGION, COUNTRY, LATITUDE, LONGITUDE, IS_COASTAL
+FROM CITY_DIM;
+
+-- Date dimension for Power BI time intelligence (2025-01-01 .. 2028-12-31).
+-- Built in Snowflake (not as a DAX table) so it works in Import AND DirectQuery mode.
+CREATE OR REPLACE VIEW VW_DATE AS
+WITH d AS (
+    SELECT DATEADD('day', ROW_NUMBER() OVER (ORDER BY SEQ4()) - 1, '2025-01-01'::DATE) AS DATE
+    FROM TABLE(GENERATOR(ROWCOUNT => 1461))
+)
+SELECT
+    DATE,
+    YEAR(DATE)                     AS YEAR,
+    MONTH(DATE)                    AS MONTH_NUMBER,
+    MONTHNAME(DATE)                AS MONTH_NAME,
+    TO_CHAR(DATE, 'YYYY-MM')       AS YEAR_MONTH,
+    DAY(DATE)                      AS DAY_OF_MONTH,
+    DAYOFWEEKISO(DATE)             AS DAY_OF_WEEK_NUMBER,   -- 1 = Monday
+    DAYNAME(DATE)                  AS DAY_NAME,
+    WEEKISO(DATE)                  AS ISO_WEEK
+FROM d;
+
+-- Latest observation per city (Overview page cards & table).
+CREATE OR REPLACE VIEW VW_LATEST_WEATHER AS
+SELECT
+    f.CITY, d.STATE, d.REGION,
+    f.OBSERVATION_TS_LOCAL, f.TEMPERATURE, f.FEELS_LIKE, f.HUMIDITY, f.PRESSURE,
+    f.WIND_SPEED, f.WIND_CATEGORY, f.WEATHER_CONDITION, f.WEATHER_DESCRIPTION,
+    f.TEMPERATURE_CATEGORY, f.HEAT_INDEX_CATEGORY, f.IS_RAINY,
+    DATEDIFF('minute', f.OBSERVATION_TS_UTC, SYSDATE()) AS MINUTES_SINCE_OBSERVATION
+FROM WEATHER_FACT f
+LEFT JOIN CITY_DIM d ON d.CITY = f.CITY
+QUALIFY ROW_NUMBER() OVER (PARTITION BY f.CITY ORDER BY f.OBSERVATION_TS_UTC DESC) = 1;
+
+-- Daily aggregates per city (Temperature Trends page).
+CREATE OR REPLACE VIEW VW_DAILY_CITY_WEATHER AS
+SELECT
+    CITY,
+    OBSERVATION_DATE,
+    COUNT(*)                          AS OBSERVATION_COUNT,
+    ROUND(AVG(TEMPERATURE), 2)        AS AVG_TEMPERATURE,
+    MIN(TEMP_MIN)                     AS MIN_TEMPERATURE,
+    MAX(TEMP_MAX)                     AS MAX_TEMPERATURE,
+    ROUND(AVG(HUMIDITY), 1)           AS AVG_HUMIDITY,
+    ROUND(AVG(PRESSURE), 1)           AS AVG_PRESSURE,
+    ROUND(AVG(WIND_SPEED), 2)         AS AVG_WIND_SPEED,
+    SUM(RAIN_1H)                      AS TOTAL_RAIN_MM_REPORTED,
+    COUNT_IF(IS_RAINY)                AS RAINY_OBSERVATIONS,
+    MODE(WEATHER_CONDITION)           AS MOST_COMMON_CONDITION
+FROM WEATHER_FACT
+GROUP BY CITY, OBSERVATION_DATE;
+
+-- Raw JSON made queryable - useful for debugging and replay.
+CREATE OR REPLACE VIEW VW_RAW_WEATHER_PARSED AS
+SELECT
+    KAFKA_PARTITION, KAFKA_OFFSET, KAFKA_TIMESTAMP, LOADED_AT,
+    TRY_PARSE_JSON(RAW_PAYLOAD)                         AS PAYLOAD,
+    PAYLOAD:city::STRING                                AS CITY,
+    PAYLOAD:temperature::FLOAT                          AS TEMPERATURE,
+    PAYLOAD:api_timestamp::TIMESTAMP_NTZ                AS API_TIMESTAMP,
+    PAYLOAD IS NULL                                     AS IS_MALFORMED
+FROM RAW_WEATHER;
+
+-- Data quality summary (rejections by reason and day).
+CREATE OR REPLACE VIEW VW_DQ_REJECTION_SUMMARY AS
+SELECT
+    TO_DATE(REJECTED_AT)     AS REJECTED_DATE,
+    r.value::STRING          AS DQ_RULE,
+    COUNT(*)                 AS REJECTED_RECORDS
+FROM WEATHER_REJECTED,
+     LATERAL FLATTEN(INPUT => SPLIT(DQ_REASON, ',')) r
+GROUP BY 1, 2;
+
+-- Pipeline health: one row, handy as a "last loaded" card in Power BI.
+CREATE OR REPLACE VIEW VW_PIPELINE_HEALTH AS
+SELECT
+    (SELECT COUNT(*)        FROM RAW_WEATHER)       AS RAW_MESSAGES,
+    (SELECT COUNT(*)        FROM WEATHER_FACT)      AS FACT_ROWS,
+    (SELECT COUNT(*)        FROM WEATHER_REJECTED)  AS REJECTED_ROWS,
+    (SELECT COUNT(DISTINCT CITY) FROM WEATHER_FACT) AS CITIES_LOADED,
+    (SELECT MAX(LOADED_AT)  FROM WEATHER_FACT)      AS LAST_FACT_LOAD_UTC,
+    (SELECT MAX(OBSERVATION_TS_UTC) FROM WEATHER_FACT) AS LATEST_OBSERVATION_UTC,
+    DATEDIFF('minute', (SELECT MAX(LOADED_AT) FROM WEATHER_FACT), SYSDATE()) AS MINUTES_SINCE_LAST_LOAD;
+
+-- Let the BI role read the views (future grants cover new objects, this covers existing ones).
+GRANT SELECT ON ALL VIEWS IN SCHEMA WEATHER_DB.WEATHER TO ROLE WEATHER_BI_ROLE;

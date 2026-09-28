@@ -1,0 +1,5 @@
+# Ingestion service (runs on your Windows host inside the venv)
+requests==2.32.3
+confluent-kafka==2.6.1
+python-dotenv==1.0.1
+pytest==8.3.3
